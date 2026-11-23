@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# 大文件（按 README 说明重新下载/生成）
+pylibs/
+pyrenv/
+checkpoints/
+datasets/
+ref/
+media/
+*.npy
+
+# LaTeX 中间产物
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# 系统
+.DS_Store

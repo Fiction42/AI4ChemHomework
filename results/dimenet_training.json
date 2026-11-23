@@ -1,0 +1,20 @@
+{
+ "pred1": -0.31801807809180194,
+ "pred2": -0.3526625524975515,
+ "pred_dE": -0.03464447440574958,
+ "ref_dE": -0.023557736651624195,
+ "final_test_rmse": 0.01947211907114651,
+ "cfg": {
+  "emb_size": 32,
+  "num_blocks": 2,
+  "num_bilinear": 4,
+  "num_spherical": 5,
+  "num_radial": 4,
+  "cutoff": 5.0,
+  "num_dense_output": 2,
+  "num_targets": 1
+ },
+ "N_TRAIN": 400,
+ "seconds": 154.6315987110138,
+ "init_test_rmse": null
+}

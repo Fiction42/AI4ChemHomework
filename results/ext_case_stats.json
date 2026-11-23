@@ -1,0 +1,11 @@
+{
+ "n_correct_top1": 43,
+ "n_wrong_top1": 1742,
+ "mean_npeaks_correct": 390.6744186046512,
+ "mean_npeaks_wrong": 354.99196326061997,
+ "mean_tanimoto_wrong": 0.12746265297900747,
+ "frac_formula_match_wrong": 0.001148105625717566,
+ "mean_sim_correct": 0.7071182270382725,
+ "mean_sim_wrong": 0.6929618783816952,
+ "fraction_xmax_lt_3700": 0.0
+}

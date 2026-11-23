@@ -1,0 +1,42 @@
+{
+ "succ1": {
+  "name": "CH3SCH2CN",
+  "formula": "C3H5NS",
+  "true": "CSCC#N",
+  "pred": "CSCC#N",
+  "sim": 0.8480642437934875,
+  "tanimoto": 1.0,
+  "correct": true,
+  "cas": ""
+ },
+ "succ2": {
+  "name": "1,1'-Biphenyl, 2-chloro-",
+  "formula": "C12H9Cl",
+  "true": "ClC1=CC=CC=C1C1=CC=CC=C1",
+  "pred": "ClC1=CC=CC=C1C1=CC=CC=C1",
+  "sim": 0.8033998608589172,
+  "tanimoto": 1.0,
+  "correct": true,
+  "cas": ""
+ },
+ "fail1": {
+  "name": "1,2-Benzenedicarboxylic acid, diundecyl ester",
+  "formula": "C30H50O4",
+  "true": "CCCCCCCCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCCCCCCCC",
+  "pred": "CCCCCOC(=O)C1=CC=CC=C1C(=O)OCCCCC",
+  "sim": 0.6440979838371277,
+  "tanimoto": 0.9629629629629629,
+  "correct": false,
+  "cas": ""
+ },
+ "fail2": {
+  "name": "Benzaldehyde, 4-methyl-",
+  "formula": "C8H8O",
+  "true": "CC1=CC=C(C=O)C=C1",
+  "pred": "O=S=O",
+  "sim": 0.8491250872612,
+  "tanimoto": 0.05263157894736842,
+  "correct": false,
+  "cas": ""
+ }
+}

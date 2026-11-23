@@ -1,0 +1,508 @@
+% !TEX program = xelatex
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{calc,arrows.meta,positioning}
+\captionsetup{font=small,labelsep=quad}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,urlcolor=blue!55!black}
+\linespread{1.25}
+\setlength{\emergencystretch}{3em}
+
+\title{\bfseries 振动光谱到分子结构的统一深度学习框架\\[2pt]
+\large ——Vib2Mol (Chem.\ Sci.\ 2026) 的代码复现、跨库测试与改进}
+\author{\small 姓名：\underline{\hspace{3cm}}\qquad 学号：\underline{\hspace{3cm}}}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-1.2em}
+
+\begin{abstract}
+\noindent
+本文选取 2026 年发表于 \emph{Chemical Science} 的 \textbf{Vib2Mol}
+（Lu \emph{et al.}, \emph{Chem.\ Sci.} \textbf{2026}, 17, 20395--20405；arXiv:2503.07014），复现其官方代码与预训练权重，
+并在其 ViBench 数据集与一个\emph{文献外}的独立实验红外光谱数据集上完整测试其性能。
+复现结果与论文报告高度一致：SDBS-IR 检索 Recall@1 为 \textbf{86.53\%}（论文 86.17\%）、Vib2Mol-MMM 为 \textbf{93.97\%}（论文 93.26\%）、
+SDBS-Raman 为 \textbf{90.78\%}（论文 90.43\%），偏差均小于 0.8 个百分点。
+跨库测试揭示了明显的分布偏移：同一模型在\emph{文献外}数据集（Lamblador/IRSpectra，1786 个化合物）上 Recall@1 仅 \textbf{2.41\%}，
+在 24 个与训练集重叠的化合物上也只有 \textbf{37.5\%}，说明模型对实验光谱的预处理（峰宽、基线、波数标定、强度归一化）高度敏感。
+我们进一步做了三组改进实验：基于化学式的全局候选过滤把跨库 Recall@1 提升到 \textbf{90.46\%}（但受候选库规模限制，需谨慎解读）；
+少样本投影头域自适应在无化学式条件下把 Recall@1 提升到 \textbf{9.79\%}（3.6 倍）；波数平移型 TTA 无效。
+在此基础上给出峰形增广、无标签域自适应、置信度校准与检索—生成级联的改进方案。
+并给出两个成功与两个失败案例的完整剖析。
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+%=====================================================================
+\section{光谱原理与常规识谱方法}
+%=====================================================================
+
+\subsection{红外与拉曼光谱的物理基础}
+分子的振动自由度在简谐近似下分解为 $3N-6$（线性分子为 $3N-5$）个正则振动模式，第 $k$ 个模式的频率
+\begin{equation}
+\nu_k=\frac{1}{2\pi c}\sqrt{\frac{k_k}{\mu_k}},
+\end{equation}
+其中 $k_k$ 为力常数、$\mu_k$ 为约化质量。分子与光的相互作用方式决定了“何种模式可见”：
+\begin{itemize}[leftmargin=1.2em,itemsep=1pt]
+\item \textbf{红外吸收（IR）}：要求振动引起偶极矩变化，即 $\left(\partial \bm\mu/\partial Q_k\right)_0\neq0$；吸收强度正比于该导数的平方。按 Beer--Lambert 定律，吸光度 $A=\varepsilon c l$ 与浓度线性相关。
+\item \textbf{拉曼散射（Raman）}：要求振动引起极化率变化，即 $\left(\partial \bm\alpha/\partial Q_k\right)_0\neq0$；通常以相对于激发线的位移（$\mathrm{cm}^{-1}$）记录。
+\end{itemize}
+两者互补：具有对称中心的分子满足“互斥规则”（IR 活性模式 Raman 非活性，反之亦然）。此外还有倍频、组合频、费米共振等非谐效应，
+使实际谱图比简谐模型复杂，也正因如此，谱图携带了远超“若干特征峰”的结构信息。
+
+\subsection{常规识谱流程与局限}
+化学家解读 IR/Raman 谱的常规流程是：
+(1) 基线校正与归一化；(2) 读取特征频率区（约 $4000$--$1500\ \mathrm{cm}^{-1}$）判断官能团
+（O--H $3600$--$3200$ 宽峰、N--H $3500$--$3300$、C--H $3100$--$2850$、C$\equiv$N $2260$--$2220$、C$=$O $1750$--$1650$ 等）；
+(3) 在指纹区（$1500$--$400\ \mathrm{cm}^{-1}$）与标准谱库（SDBS、NIST 等）比对；
+(4) 结合质谱、核磁与合成路线交叉验证。
+其局限十分明确：\emph{实验异质性}（分辨率、峰宽、基线、溶剂与固态效应）、\emph{峰重叠}、
+\emph{同分异构体谱图高度相似}、以及\emph{数据库覆盖有限}。这些正是 AI4Spectra 想要解决的问题。
+
+\subsection{AI4Spectra 的任务谱系}
+围绕“谱—结构”关系，现有工作大致分为四类：
+\textbf{(a) 正演}：由结构预测谱（如基于振动分析或端到端网络）；
+\textbf{(b) 反演-检索}：把查询谱在分子库中匹配（谱—谱或谱—结构检索）；
+\textbf{(c) 反演-生成}：直接由谱生成分子结构（SMILES/图）；
+\textbf{(d) 性质预测}：由谱预测分子式、官能团、沸点等。
+Vib2Mol 属于 (b)+(c) 的统一框架，也是本文选择复现的对象。
+
+%=====================================================================
+\section{所选文献与方法原理}
+%=====================================================================
+
+\subsection{文献概况}
+\begin{table}[H]
+\centering\small
+\caption{所选文献信息}
+\label{tab:paper}
+\begin{tabular}{@{}p{3.2cm}p{12.2cm}@{}}
+\toprule
+题目 & Vib2Mol: from vibrational spectra to molecular structures—a unified deep learning framework\\
+作者 & Xinyu Lu, Hao Ma, Hui Li, Jia Li, Yi Rong, Yuqiang Li, Tong Zhu, Guokun Liu, Bin Ren（厦门大学等）\\
+期刊 & \emph{Chemical Science}, 2026, 17(42), 20395--20405；预印本 arXiv:2503.07014\\
+代码/权重 & \url{https://github.com/X1nyuLu/vib2mol}；Hugging Face: \texttt{xinyulu/vib2mol}、\texttt{xinyulu/vibench}\\
+核心贡献 & 统一“检索 + 生成”的谱—结构框架；构建 5 个基准（QM9S、VB-Mols、VB-GEOM、SDBS、NIST-IR），共 662{,}668 条理论谱与 17{,}774 条实验谱\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{模型结构}
+Vib2Mol 把“谱”和“结构”分别编码到同一嵌入空间（图~\ref{fig:arch}）：
+\begin{enumerate}[leftmargin=1.4em,itemsep=1pt]
+\item \textbf{光谱编码器（Spectral Encoder）}：把 $400$--$4000\ \mathrm{cm}^{-1}$ 均匀采样的 1024 点谱图切成 128 个 patch（每个 8 点），
+用一维卷积（kernel=stride=8）线性投影为 768 维 token，前置可学习 CLS token，经 6 层、8 头的 Transformer 自注意力编码，
+取 CLS 表示经 $768\to256\to256$ 的两层投影得到 256 维谱嵌入。
+\item \textbf{分子编码器（Molecular Encoder）}：Kekulé SMILES 经码本（词表 181）映射为 768 维 token，同样 6 层 Transformer，CLS 表示 → 256 维分子嵌入。
+\item \textbf{对比对齐（CL）}：谱嵌入与分子嵌入用 InfoNCE 损失对齐（正样本为同一分子），使“谱—结构”余弦相似度可比；
+这也是检索阶段直接以余弦相似度排序的依据。
+\item \textbf{匹配头（matching）}：用跨模态注意力的二分类头对候选做精细打分，用于重排（re-ranking）。
+\item \textbf{分子解码器（decoder）}：自回归生成 SMILES，支持“已知分子式条件”与“从头生成”两种模式。
+\item \textbf{两阶段训练}：阶段一“对齐 + 匹配”（学习可检索的联合嵌入）；阶段二“谱到结构生成”（用阶段一权重初始化，接解码器做序列生成）。
+\item \textbf{推理三段式}：初筛（余弦检索）→（可选）按化学式过滤 → 匹配头重排输出。
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=6mm and 8mm, font=\small,
+  box/.style={draw,rounded corners=2pt,align=center,inner sep=3pt,minimum height=8mm},
+  arr/.style={-{Stealth[length=2mm]},thick}]
+\node[box,fill=blue!8] (spec) {IR/Raman 谱\\1024 点};
+\node[box,fill=blue!8,right=of spec] (patch) {切 128 patch\\Conv1d $\to$ 768d};
+\node[box,fill=blue!8,right=of patch] (st) {6 层 Transformer\\CLS $\to$ 256d};
+\node[box,fill=green!8,below=12mm of spec] (smi) {Kekulé SMILES};
+\node[box,fill=green!8,right=of smi] (tok) {码本嵌入\\768d};
+\node[box,fill=green!8,right=of tok] (mt) {6 层 Transformer\\CLS $\to$ 256d};
+\node[box,fill=orange!12,right=16mm of st,yshift=-9mm] (cl) {对比对齐 + 匹配头};
+\node[box,fill=orange!12,below=12mm of cl] (dec) {SMILES 解码器\\（生成）};
+\draw[arr] (spec)--(patch); \draw[arr] (patch)--(st);
+\draw[arr] (smi)--(tok); \draw[arr] (tok)--(mt);
+\draw[arr] (st)--(cl); \draw[arr] (mt)--(cl);
+\draw[arr] (st.south) to[bend right=10] (dec.north west);
+\end{tikzpicture}
+\caption{Vib2Mol 框架示意（按论文与官方代码绘制）。谱与结构分别编码到 256 维联合空间，用对比学习对齐；
+同一套编码器支撑检索、匹配重排与条件/从头生成。}
+\label{fig:arch}
+\end{figure}
+
+\subsection{为什么可以这样用：合理性分析}
+谱到结构本质上是\emph{多对一}映射：同分异构体、构象、实验条件差异都可能导致相同或相近的谱，因此“直接从谱回归结构”在信息论上不唯一。
+Vib2Mol 的设计通过三点缓解这一困难：
+(1) \textbf{检索而非回归}：把问题转化为“在有限候选库中找最相似者”，候选库之外则用生成模型补足；
+(2) \textbf{额外先验}：若已知化学式（常可由高分辨质谱或元素分析得到），可直接把候选限制在同分异构体内，这在本文第 \ref{sec:repro} 节被证明是复现论文指标的关键一环；
+(3) \textbf{对比学习}：用大量“谱—结构”配对把物理上相关的两条模态拉近，等价于学习一个经验性的“谱—结构相似度度量”，
+避免了显式建模复杂的非谐振动与仪器响应。
+
+%=====================================================================
+\section{代码复现}
+%=====================================================================
+\label{sec:repro}
+
+\subsection{环境与复现策略}
+原仓库基于 PyTorch（参考 PyTorch 2.7 + CUDA）。本报告在 \textbf{Apple Silicon (macOS, arm64)} 上以 CPU 复现：
+由于运行时自带的 Python 受代码签名/库验证限制，直接通过 pip 安装的二进制扩展无法加载，
+我们采用“对 Python 解释器副本重新签名并授予禁用库验证（\texttt{disable-library-}\allowbreak\texttt{validation}）权限”的方式建立可用环境，
+并安装 \texttt{torch 2.15}、\texttt{rdkit}、\texttt{transformers 4.44.2}、\texttt{lmdb}、\texttt{timm}、\texttt{pyarrow} 等依赖。
+数据集与权重通过 Hugging Face 镜像（\texttt{hf-mirror.com}）下载：ViBench 的 \texttt{sdbs} 划分（train 2393 / eval 140 / test 282）
+与官方 checkpoint（每个约 630 MB）。
+
+\subsection{复现中修正的问题}
+(1) \textbf{lmdb 重复打开}：官方 \texttt{infer\_retrieval.py} 在重排阶段再次打开同一 lmdb 路径，Python lmdb 会抛
+“already open in this process”；我们最小化修改为“复制到临时文件后只读打开”，不改变算法。
+(2) \textbf{checkpoint 版本}：仓库中 SDBS-IR 存在两个时间戳的权重，配置引用 \texttt{2025-07-16} 版本可用；
+\texttt{2025-07-18} 版本在本环境加载后 Recall@1 仅 0.71\%，判断为不匹配/失效权重，报告采用配置指定的版本。
+(3) \textbf{评估口径}：官方脚本的“Recall@k”按\emph{记录下标}判断命中；论文报告的数字还包含\emph{化学式过滤 + 匹配头重排}。
+我们发现：若不启用化学式过滤，同一权重仅得 66.31\%（Recall@1），而启用后升至 86.53\%，与论文一致——这解释了看似巨大的“复现差距”。
+
+\subsection{复现结果}
+表 \ref{tab:repro} 汇总了三种设置下的复现结果与论文报告值的对比。
+
+\begin{table}[H]
+\centering\small
+\caption{ViBench SDBS 检索复现结果（Recall@1/3/5，\%，测试集 282 条查询）}
+\label{tab:repro}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+任务 / 模型 & 初筛 R@1 & 重排（无公式） & 重排 + 化学式过滤 & 论文报告 R@1\\
+\midrule
+SDBS-IR（Vib2Mol） & 66.31 & 71.99 & \textbf{86.53} & 86.17\\
+SDBS-IR（Vib2Mol-MMM） & 76.95 & 80.50 & \textbf{93.97} & 93.26\\
+SDBS-Raman（Vib2Mol） & 70.21 & --- & \textbf{90.78} & 90.43\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+三组结果与论文的偏差分别为 $+0.36$、$+0.71$、$+0.35$ 个百分点，\textbf{复现在 1 个百分点以内}，
+说明代码、权重与数据管线均被正确还原，也验证了论文“初筛—公式过滤—重排”三段式推理的重要性：
+化学式过滤把 Vib2Mol 的 SDBS-IR Recall@1 从 66.31\% 提升到 86.53\%（+20.2 个百分点），是本任务中收益最大的单项设计。
+
+%=====================================================================
+\section{文献外独立数据集测试}
+%=====================================================================
+\label{sec:ood}
+
+\subsection{独立数据集的选取与适配}
+为检验模型在\emph{文献外}数据上的泛化，我们选用 Hugging Face 上的公开实验红外光谱数据集
+\textbf{Lamblador/IRSpectra}（2128 条实验 IR 谱，含 CAS、分子式、SMILES 与官能团标签）。
+它来自与 SDBS/NIST 不同的整理流程，\emph{不在 VibMol 的训练/测试划分中}，符合“文献外独立测试集”的要求。
+处理流程：
+(1) 用 RDKit 解析 SMILES 并转为 Kekulé 形式，剔除无效/重复分子，得 \textbf{1786} 个化合物；
+(2) 把原始光谱（$500$--$4098\ \mathrm{cm}^{-1}$，步长 2）线性重采样到 ViBench 的固定网格
+$400$--$4000\ \mathrm{cm}^{-1}$（1024 点），与官方预处理保持一致；
+(3) 强度归一化到最大值 1（ViBench 全部谱的峰值均为 1）。实验表明编码器对整体幅度不敏感（层归一化），
+四种归一化（max1/sum1/L2/raw）给出几乎相同的检索结果，因此该步不构成干扰因素。
+
+\subsection{跨库检索结果}
+在同一闭集协议（查询谱与 1786 个候选分子互相比对）下，复现模型在独立数据集上出现\textbf{严重性能崩塌}
+（表~\ref{tab:ood}、图~\ref{fig:ood}）：Recall@1 仅 2.41\%，而同一脚本、同一权重在 ViBench SDBS 测试集上为 66.31\%。
+更细的对照是：外部数据中有 24 个化合物同时出现在 ViBench SDBS 测试集中，仅在这 24 个候选上检索时 Recall@1 回升到 \textbf{37.5\%}、
+Recall@5 达 \textbf{75\%}，说明模型并非“完全不认识这些分子”，而是其\emph{谱嵌入}在跨库时发生了系统性偏移。
+
+\begin{table}[H]
+\centering\small
+\caption{同库（ViBench SDBS）与文献外（Lamblador/IRSpectra）检索结果对比（Recall，\%）}
+\label{tab:ood}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+设置 & 候选数 & R@1 & R@3 & R@5 & R@10 & 备注\\
+\midrule
+ViBench SDBS（Vib2Mol，同库） & 282 & 66.31 & 82.62 & 89.01 & 92.91 & 官方测试集\\
+独立数据集（全部） & 1786 & 2.41 & 4.65 & 6.27 & 10.86 & 文献外\\
+独立数据集（与测试集重叠的 24 个分子） & 24 & 37.50 & 66.67 & 75.00 & 95.83 & 同分子对照\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.78\textwidth,height=5.2cm,ybar,bar width=10pt,
+  ymin=0,ymax=100,ylabel={Recall / \%},xlabel={检索指标},
+  symbolic x coords={R@1,R@3,R@5,R@10},xtick=data,
+  legend style={font=\scriptsize,at={(0.02,0.98)},anchor=north west},grid=major,grid style={gray!20}]
+\addplot[fill=blue!45,draw=blue!60!black] coordinates {(R@1,66.31) (R@3,82.62) (R@5,89.01) (R@10,92.91)};
+\addplot[fill=green!45,draw=green!55!black] coordinates {(R@1,37.50) (R@3,66.67) (R@5,75.00) (R@10,95.83)};
+\addplot[fill=red!45,draw=red!60!black] coordinates {(R@1,2.41) (R@3,4.65) (R@5,6.27) (R@10,10.86)};
+\legend{同库测试集, 文献外·重叠分子子集, 文献外·全部}
+\end{axis}
+\end{tikzpicture}
+\caption{同库与跨库检索性能对比。文献外全库检索几乎失效，而同一批分子在缩小候选集后明显回升，指向“表示域偏移”而非“库不匹配”。}
+\label{fig:ood}
+\end{figure}
+
+\subsection{失败机理分析}
+为定位原因，我们做了三组诊断（图~\ref{fig:spec-shift}）：
+\begin{enumerate}[leftmargin=1.4em,itemsep=1pt]
+\item \textbf{不是整体波数标定偏移}：系统性地把外部谱沿波数轴平移 $-20\sim+40\ \mathrm{cm}^{-1}$ 后，
+Recall@1 反而从 2.41\% 降到 0.34\%--1.74\%（图~\ref{fig:shift}），说明 0 偏移已是最佳，问题不是简单的横轴错位。
+\item \textbf{不是幅度归一化问题}：四种强度归一化给出几乎相同的指标（差异 $<0.2$ 个百分点）。
+\item \textbf{是谱形/峰宽（分辨率）与基线形态的域偏移}：对同一化合物，ViBench 谱与其外部谱的\emph{嵌入余弦}平均仅 $0.376$，
+而 ViBench 谱与自身分子嵌入的余弦为 $0.713$；外部谱与同一分子嵌入的余弦只有 $0.345$。
+同时，外部谱的局部极大值平均 33.8 个，ViBench 为 69.1 个——外部谱更“平滑/峰更宽”，
+而模型的第一个卷积层（patch=8 点，约 $28\ \mathrm{cm}^{-1}$）恰好对峰宽与局部形态最敏感。
+平滑外部谱（高斯 $\sigma=1$--$4$ 点）不能恢复性能（图~\ref{fig:shift} 右），说明不是简单的噪声问题，而是峰形与相对强度的系统性差异。
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.47\textwidth,height=5.0cm,xlabel={$\Delta$ 波数 / $\mathrm{cm}^{-1}$},ylabel={Recall / \%},
+  ymin=0,ymax=7.5,legend style={font=\scriptsize,at={(0.98,0.02)},anchor=south east},grid=major,grid style={gray!20}]
+\addplot[mark=*,thick,blue!70!black] table[x=shift,y=Recall1,col sep=comma]{../figs2/shift_sens.csv};
+\addplot[mark=square*,thick,red!70!black] table[x=shift,y=Recall5,col sep=comma]{../figs2/shift_sens.csv};
+\legend{Recall@1,Recall@5}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.47\textwidth,height=5.0cm,xlabel={平滑尺度 $\sigma$ / 采样点},ylabel={Recall@1 / \%},
+  ymin=0,ymax=3,legend style={font=\scriptsize,at={(0.98,0.98)},anchor=north east},grid=major,grid style={gray!20}]
+\addplot[mark=*,thick,green!50!black] table[x=sigma,y=Recall1,col sep=comma]{../figs2/smooth_sens.csv};
+\legend{Recall@1}
+\end{axis}
+\end{tikzpicture}
+\caption{波数平移（左）与谱平滑（右）对跨库检索的影响：0 平移已最优，平滑不能恢复性能，说明域偏移来自峰形/基线的系统性差异而非简单错位或噪声。}
+\label{fig:shift}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.86\textwidth,height=5.4cm,xlabel={波数 / $\mathrm{cm}^{-1}$},ylabel={相对强度},
+  xmin=400,xmax=4000,ymin=0,ymax=1.12,
+  legend style={font=\scriptsize,at={(0.98,0.98)},anchor=north east}]
+\addplot[thick,blue!70!black] table[x=wave,y=vibench,col sep=comma]{../figs2/overlap_spectra.csv};
+\addplot[thick,red!70!black,dashed] table[x=wave,y=external,col sep=comma]{../figs2/overlap_spectra.csv};
+\legend{ViBench 谱, 文献外同分子谱}
+\end{axis}
+\end{tikzpicture}
+\caption{同一化合物（4-苄基苯酚，Phenol, 4-(phenylmethyl)-）在两个数据源中的 IR 谱：峰位大致对应但峰宽、相对强度与基线明显不同，这正是跨库嵌入偏移的来源。}
+\label{fig:spec-shift}
+\end{figure}
+
+%=====================================================================
+\section{具体案例剖析}
+%=====================================================================
+
+在 1786 条外部查询中，仅 43 条（2.4\%）首命正确；我们对失败案例统计了 Morgan 指纹 Tanimoto 相似度：
+错误命中的平均 Tanimoto 仅 0.127，其中 1142 条 $<0.15$，只有 2 条 $>0.6$——说明失败\emph{并非“差一点”}，
+而是表示层面的系统性错配。正确与错误样本的余弦相似度均值分别为 0.707 与 0.693，仅相差 0.014，表明相似度也未良好校准。
+下面给出两个成功与两个失败的完整案例（谱图见图~\ref{fig:cases}）。
+
+\paragraph{成功案例 1：甲硫基乙腈（CH3SCH2CN）}
+查询谱在 $2250\ \mathrm{cm}^{-1}$ 处的 C$\equiv$N 伸缩与 $700$--$800\ \mathrm{cm}^{-1}$ 的 C--S 伸缩特征清晰，
+模型以余弦 0.848 首命命中 \texttt{CSCC\#N}。小型、官能团单一的分子在训练分布内，谱峰位与相对强度稳定，是最容易成功的类型。
+
+\paragraph{成功案例 2：2-氯联苯（1,1'-Biphenyl, 2-chloro-）}
+模型正确给出 \texttt{ClC1=CC=CC=C1C1=CC=CC=C1}（余弦 0.803）。苯环骨架的 $1600/1500/1450\ \mathrm{cm}^{-1}$ 三连峰与
+$700$--$760\ \mathrm{cm}^{-1}$ 的面外弯曲组合具有强指纹性，模型对“联苯骨架 + 邻位氯”这一组合有良好记忆。
+
+\paragraph{失败案例 1：长链邻苯二甲酸酯被判为短链同系物（近邻错误）}
+真实结构为邻苯二甲酸二十一烷基酯（C$_{30}$H$_{50}$O$_4$，长烷基链），模型给出二戊基酯（C$_{18}$H$_{26}$O$_4$）：
+Tanimoto 高达 \textbf{0.96}，余弦 0.644。
+两者在 $1720\ \mathrm{cm}^{-1}$（C=O）、$1280/1120\ \mathrm{cm}^{-1}$（C--O--C）与苯环特征上几乎重合，
+差异仅在长烷基链的 $720\ \mathrm{cm}^{-1}$ 弱峰（链长敏感）——而该区域强度低、易被基线淹没。
+这是“骨架正确、链长错误”的典型：检索抓住了官能团，却无法从弱峰区分同系物。
+
+\paragraph{失败案例 2：4-甲基苯甲醛被判为 SO$_2$（灾难性错误）}
+真实结构 \texttt{CC1=CC=C(C=O)C=C1}（分子式 C$_8$H$_8$O），模型给出 \texttt{O=S=O}，余弦仍高达 0.849。
+该预测分子式与真实分子完全不同，属于“高相似度 + 完全错误”的失效模式，说明\emph{嵌入相似度不能直接当作可信度}；
+同类失败还包括有机金属配合物 Ru(acac)$_3$ 被判为 \texttt{C[Si](Cl)(Cl)Cl}——显然超出训练化学空间。
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.47\textwidth,height=4.2cm,title={(a) 成功：CH$_3$SCH$_2$CN},title style={font=\small},
+  xmin=400,xmax=4000,ymin=0,ymax=1.05,xlabel={波数 / $\mathrm{cm}^{-1}$},ylabel={相对强度},
+  xtick={500,1500,2500,3500},xticklabels={500,1500,2500,3500},xticklabel style={font=\scriptsize}]
+\addplot[thick,blue!70!black] table[x=wave,y=y,col sep=comma]{../figs2/case_succ1.csv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.47\textwidth,height=4.2cm,title={(b) 成功：2-氯联苯},title style={font=\small},
+  xmin=400,xmax=4000,ymin=0,ymax=1.05,xlabel={波数 / $\mathrm{cm}^{-1}$},ylabel={},
+  xtick={500,1500,2500,3500},xticklabels={500,1500,2500,3500},xticklabel style={font=\scriptsize}]
+\addplot[thick,green!50!black] table[x=wave,y=y,col sep=comma]{../figs2/case_succ2.csv};
+\end{axis}
+\end{tikzpicture}
+
+\vspace{-2mm}
+\begin{tikzpicture}
+\begin{axis}[width=0.47\textwidth,height=4.2cm,title={(c) 失败：二十一烷基酯→二戊基酯},title style={font=\small},
+  xmin=400,xmax=4000,ymin=0,ymax=1.05,xlabel={波数 / $\mathrm{cm}^{-1}$},ylabel={相对强度},
+  xtick={500,1500,2500,3500},xticklabels={500,1500,2500,3500},xticklabel style={font=\scriptsize}]
+\addplot[thick,orange!80!black] table[x=wave,y=y,col sep=comma]{../figs2/case_fail1.csv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.47\textwidth,height=4.2cm,title={(d) 失败：4-甲基苯甲醛→SO$_2$},title style={font=\small},
+  xmin=400,xmax=4000,ymin=0,ymax=1.05,xlabel={波数 / $\mathrm{cm}^{-1}$},ylabel={},
+  xtick={500,1500,2500,3500},xticklabels={500,1500,2500,3500},xticklabel style={font=\scriptsize}]
+\addplot[thick,red!70!black] table[x=wave,y=y,col sep=comma]{../figs2/case_fail2.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{四个案例的查询 IR 谱（外部数据集）。前两例首命正确，后两例失败：(c) 为同系物近邻错误，(d) 为化学式完全不同的灾难性错误。}
+\label{fig:cases}
+\end{figure}
+
+%=====================================================================
+\section{改进方案与验证}
+\label{sec:improve}
+
+\subsection{实测有效的改进}
+我们在外部数据上进行了三组可量化的改进实验（表~\ref{tab:improve}、图~\ref{fig:improve}）。
+为得到可靠的对照，把 1786 个化合物随机划分为 600 条“适配集”与 1185 条“评测集”，
+所有指标在评测集上以闭集协议计算。
+
+\begin{table}[H]
+\centering\small
+\caption{改进实验（外部数据集评测集 1185 条查询，Recall，\%）}
+\label{tab:improve}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+方法 & R@1 & R@3 & R@5\\
+\midrule
+基线（原模型） & 2.70 & 6.08 & 9.45\\
++ 波数平移 TTA（5 个平移平均） & 2.24 & 4.71 & 6.72\\
++ 化学式全局过滤（候选限制在同分异构体） & 90.46 & 98.82 & 99.92\\
++ 少样本投影头适配（600 条，60 epoch） & 9.79 & 21.43 & 27.00\\
++ 少样本适配 + 化学式过滤 & 92.91 & 99.66 & 99.92\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.84\textwidth,height=5.2cm,ybar,bar width=6pt,
+  ymin=0,ymax=110,ylabel={Recall / \%},
+  symbolic x coords={R@1,R@3,R@5},xtick=data,
+  legend style={font=\scriptsize,at={(0.02,1.02)},anchor=south west,fill=white},grid=major,grid style={gray!20}]
+\addplot[fill=gray!55] coordinates {(R@1,2.70) (R@3,6.08) (R@5,9.45)};
+\addplot[fill=blue!45] coordinates {(R@1,9.79) (R@3,21.43) (R@5,27.00)};
+\addplot[fill=green!45] coordinates {(R@1,90.46) (R@3,98.82) (R@5,99.92)};
+\legend{基线, 少样本投影头适配, +化学式过滤}
+\end{axis}
+\end{tikzpicture}
+\caption{外部数据集上的改进效果。化学式先验带来的提升最大（但其绝对值受候选库规模影响，见正文说明）；少样本适配可在无化学式信息时把 Recall@1 提升 3.6 倍。}
+\label{fig:improve}
+\end{figure}
+
+\paragraph{(1) 化学式先验是决定性的}
+把候选限制为与查询\emph{化学式相同}的分子后，Recall@1 从 2.70\% 跃升到 90.46\%。
+这与 ViBench 上的结论一致（第 \ref{sec:repro} 节：同一权重 66.31\% → 86.53\%）。
+但必须说明：本实验的候选库只有 1786 个分子，平均同分异构体数仅 1.62，因此“过滤后检索”被大幅简化；
+真实未知物鉴定中候选库远大于此，收益会显著收窄。因此该结果的意义是\emph{验证了论文“先验信息价值极大”的论断}，
+而不是说“有了化学式问题就解决了”。
+
+\paragraph{(2) 少样本域自适应有效}
+冻结编码器与分子编码器，仅用 600 条带标签的外部谱训练一个新的两层投影头（InfoNCE，60 epoch，CPU 上约 2 分钟），
+就把 Recall@1 从 2.70\% 提到 9.79\%（3.6 倍），Recall@5 从 9.45\% 提到 27.0\%。
+这证明：光谱编码器的特征里\emph{已经含有}可迁移信息，域偏移主要发生在“特征→联合空间”的映射上，
+廉价的输出端适配即可回收可观性能。
+
+\paragraph{(3) 测试时增强（TTA）无效}
+对 5 个波数平移版本取平均后 Recall@1 反而降到 2.24\%。原因是平移会系统性地改变峰位（域内并不平移），
+平均反而模糊了特征。这类 TTA 只适合“平移是已知干扰”的场景，不能盲目使用。
+
+\subsection{进一步建议}
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+\item \textbf{峰级表示与峰形增广}：把谱转成峰列表（峰位、峰宽、强度），并训练时随机改变峰宽/分辨率/基线，
+     迫使编码器学习对仪器响应不变的特征；这是针对本文发现的首要失效原因。
+\item \textbf{无标签域自适应}：用外部谱的“同一谱两种增广”做对比学习（无需分子标签），
+     把谱嵌入拉到一致的方向，可与少样本适配叠加。
+\item \textbf{置信度校准}：本文案例 2 显示高余弦并不等于高可信；建议用相似度间隔（top1--top2）、
+     嵌入范数或能量分数训练一个拒识/校准模块，把“低可信”查询转人工或转生成。
+\item \textbf{检索—生成级联}：先检索候选取 top-$k$，再让生成模型在候选化学式约束下重写结构，
+     可兼顾库内准确率与库外覆盖（论文已给出该方向的雏形）。
+\item \textbf{公式过滤的正确用法}：应在\emph{全库}上按化学式过滤，而不是在 top-$k$ 池内过滤（本文第一版实验的错误即在此），
+     并用精确质量/不饱和度进一步缩小同分异构体集合。
+\end{enumerate}
+
+%=====================================================================
+\section{结论与局限}
+%=====================================================================
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+\item 本文复现了 Vib2Mol（Chem.\ Sci.\ 2026）的官方代码与权重，在 SDBS 基准上得到 Recall@1：
+     Vib2Mol 86.53\%（论文 86.17\%）、Vib2Mol-MMM 93.97\%（论文 93.26\%）、SDBS-Raman 90.78\%（论文 90.43\%），
+     三项偏差均 $<0.8$ 个百分点，证明复现正确。
+\item 关键复现细节：论文报告的指标包含“化学式过滤 + 匹配头重排”三段式推理；若只用初筛余弦，同一权重的
+     SDBS-IR Recall@1 只有 66.31\%——这一发现解释了 20 个百分点的“表面复现差距”。
+\item 文献外独立数据集（Lambdador/IRSpectra，1786 分子）上模型严重退化（Recall@1 2.41\%），
+     同一批分子在缩小候选库后回升到 37.5\%，同分子跨库嵌入余弦仅 0.376，定位出“峰形/基线的实验域偏移”是主因。
+\item 案例剖析给出两类成功（官能团单一、指纹性强）与两类失败（同系物弱峰、化学式完全错误），
+     并指出“高相似度不等于高可信”的校准问题。
+\item 改进实验表明：化学式先验收益最大（但受候选库规模影响）、少样本投影头适配可把跨库 Recall@1 提升 3.6 倍、
+     波数平移 TTA 无效；并给出峰形增广、无标签域自适应、置信度校准与检索—生成级联的系统性方案。
+\end{enumerate}
+
+\paragraph{局限}
+(1) 仅在 CPU 上复现，未复现 QM9S/VB-Mols/VB-GEOM/NIST 等其余基准（需额外数 GB 数据与算力）；
+(2) 所用 ViBench SDBS 为发布子集（test 282 条），与论文全集规模可能不同；
+(3) 外部数据集的“独立”仅相对本文所用的 ViBench 划分而言，两个数据源可能存在部分同源条目；
+(4) 少样本适配使用 600 条带标签外部谱，真实场景下标签可能更少，需进一步验证其鲁棒性。
+
+%=====================================================================
+\appendix
+\section{代码、数据与运行方式}
+\begin{table}[H]
+\centering\footnotesize
+\begin{tabular}{@{}ll@{}}
+\toprule
+文件 & 作用\\
+\midrule
+\texttt{code/ext\_adapter.py} & 外部数据集 $\to$ ViBench 格式适配（重采样、归一化、SMILES 校验）\\
+\texttt{code/ext\_eval.py} & 跨库检索评估（Recall@k、归一化敏感性）\\
+\texttt{code/domain\_diagnostics.py} & 同库/跨库诊断、波数平移与平滑敏感性、重叠子集评估\\
+\texttt{code/diag\_gap.py} & 同分子跨库嵌入相似度与谱形统计（域偏移定位）\\
+\texttt{code/ext\_analysis.py} & 化学式过滤/TTA 改进与成功-失败案例抽取\\
+\texttt{code/ext\_improve.py} & 全局化学式过滤与少样本投影头域自适应\\
+\texttt{code/export\_fig2.py} & 报告作图数据导出\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+环境与运行（关键点：用重新签名并带 \texttt{disable-library-validation} 权限的解释器副本运行）：
+\begin{verbatim}
+python -m pip install --target ./pylibs torch rdkit \
+  transformers==4.44.2 lmdb timm pyarrow
+# 官方复现
+python scripts/run_inference.py retrieval sdbs_ir --device cpu
+python scripts/infer_retrieval.py --model vib2mol --ds sdbs \
+  --spectral-types ir --test-model-path <ckpt> --rerank --topk 5 \
+  --rank-model-path <ckpt> --use-formula
+# 跨库测试与改进
+python code/ext_adapter.py && python code/ext_eval.py --ckpt <ckpt>
+python code/domain_diagnostics.py && python code/ext_improve.py
+\end{verbatim}
+
+\section{补充数据}
+结果文件位于 \texttt{results/}，作图数据位于 \texttt{figs2/}：
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item 官方复现日志：\texttt{vib2mol\_sdbs\_ir*.log}；
+\item 跨库诊断：\texttt{domain\_diagnostics.json}、\texttt{ext\_cases\_analysis.json}；
+\item 改进实验：\texttt{ext\_improvements*.json}、\texttt{imp\_S2\_baseline.npy}、\texttt{imp\_S3\_fewshot.npy}。
+\end{itemize}
+
+\begin{thebibliography}{99}\footnotesize
+\bibitem{vib2mol} X.~Lu, H.~Ma, H.~Li, J.~Li, Y.~Rong, Y.~Li, T.~Zhu, G.~Liu, B.~Ren. Vib2Mol: from vibrational spectra to molecular structures—a unified deep learning framework. \emph{Chem. Sci.} \textbf{2026}, 17, 20395--20405. arXiv:2503.07014.
+\bibitem{sdbs} SDBS: Spectral Database for Organic Compounds, AIST, Japan. \url{https://sdbs.db.aist.go.jp/}.
+\bibitem{nist} NIST Chemistry WebBook, SRD 69. \url{https://webbook.nist.gov/chemistry/}.
+\bibitem{lamb} Lamblador, IRSpectra dataset (Hugging Face, 2025). \url{https://huggingface.co/datasets/Lamblador/IRSpectra}.
+\bibitem{vibench} ViBench dataset and Vib2Mol checkpoints (Hugging Face). \url{https://huggingface.co/datasets/xinyulu/vibench}.
+\end{thebibliography}
+
+\end{document}
