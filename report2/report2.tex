@@ -21,7 +21,7 @@
 
 \title{\bfseries 振动光谱到分子结构的统一深度学习框架\\[2pt]
 \large ——Vib2Mol (Chem.\ Sci.\ 2026) 的代码复现、跨库测试与改进}
-\author{\small 姓名：\underline{\hspace{3cm}}\qquad 学号：\underline{\hspace{3cm}}}
+\author{\small 姓名：刘融霄\qquad 学号：25800220008}
 \date{}
 
 \begin{document}
@@ -41,7 +41,7 @@ SDBS-Raman 为 \textbf{90.78\%}（论文 90.43\%），偏差均小于 0.8 个百
 少样本投影头域自适应在无化学式条件下把 Recall@1 提升到 \textbf{9.79\%}（3.6 倍）；波数平移型 TTA 无效。
 在此基础上给出峰形增广、无标签域自适应、置信度校准与检索—生成级联的改进方案。
 并给出两个成功与两个失败案例的完整剖析。
-全部代码、实验输出与数据链接见 \url{https://github.com/Fiction42/AI4ChemHomework}（定位方法见第~\ref{sec:repo2} 节）。
+全部代码、实验输出与数据链接见 \url{https://github.com/Fiction42/AI4ChemHomework}。
 \end{abstract}
 
 \newpage
@@ -459,53 +459,10 @@ Tanimoto 高达 \textbf{0.96}，余弦 0.644。
 %=====================================================================
 \section{代码与数据可用性}
 %=====================================================================
-\label{sec:repo2}
-本报告的全部代码、实验输出与作图数据均已公开在 GitHub（main 分支只读快照）：
+本报告的全部代码、实验输出与作图数据见：
 \begin{center}
 \url{https://github.com/Fiction42/AI4ChemHomework}
 \end{center}
-批阅时可按表~\ref{tab:repo2} 定位材料。
-
-\begin{table}[H]
-\centering\footnotesize
-\caption{本报告对应仓库内容索引}
-\label{tab:repo2}
-\begin{tabular}{@{}p{3.6cm}p{11.6cm}@{}}
-\toprule
-仓库路径 & 内容\\
-\midrule
-\texttt{report2/} & 本报告的 LaTeX 源码与 PDF（\texttt{第3章作业2\_实验报告.pdf}）\\
-\texttt{code/} & 适配与评估（\texttt{ext\_adapter.py}、\texttt{ext\_eval.py}）、域偏移诊断（\texttt{domain\_diagnostics.py}、\texttt{diag\_gap.py}）、
-改进实验与案例抽取（\texttt{ext\_analysis.py}、\texttt{ext\_improve.py}）\\
-\texttt{results/} & 官方复现日志 \texttt{vib2mol\_sdbs\_ir*.log}、\texttt{vib2mol\_mmm\_sdbs\_ir\_formula.log}；
-跨库结果 \texttt{domain\_diagnostics.json}、\texttt{ext\_cases\_analysis.json}；改进实验 \texttt{ext\_improvements*.json}\\
-\texttt{figs2/} & 报告作图数据（灵敏度曲线、案例谱、Tanimoto 分布等）\\
-\texttt{scripts/setup\_env.sh} & 复现环境搭建脚本（签名 Python + torch/rdkit/transformers 等）\\
-\texttt{README.md} & 仓库总览、主要结果表与逐条复现命令\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{原始数据在哪里}
-ViBench 数据集与 Vib2Mol 权重体积达 GB 级，未放入仓库，按 \texttt{README.md} 中的命令下载：
-\begin{verbatim}
-hf download xinyulu/vibench --repo-type=dataset --local-dir datasets/vibench
-hf download xinyulu/vib2mol --local-dir checkpoints
-\end{verbatim}
-文献外的独立测试集为 Hugging Face 的 \texttt{Lamblador/IRSpectra}（test split），
-经 \texttt{python code/ext\_adapter.py} 适配为 ViBench 格式（中间结果也可由该脚本重新生成）。
-报告表~3 的 282 条 ViBench SDBS 测试谱与 1786 条外部谱的逐样本结果已放在
-\texttt{results/} 的 \texttt{ext\_cases\_analysis.json}（含每条样本的 top-5 预测、Tanimoto 与谱特征）。
-
-\paragraph{给批阅者的快速指引}
-(1) 官方基准复现：见 \texttt{README.md} 的“官方复现命令”，日志见 \texttt{results/} 目录（文件名以 \texttt{vib2mol\_sdbs} 开头）；
-(2) 跨库测试与改进实验（依次执行）：
-\begin{verbatim}
-python code/ext_adapter.py
-python code/ext_eval.py --ckpt <ckpt> --arch vib2mol
-python code/ext_improve.py
-\end{verbatim}
-(3) 只需核对报告中的数字时，直接打开 \texttt{results/} 下对应 JSON，键名与正文一致。
 
 %=====================================================================
 \appendix
