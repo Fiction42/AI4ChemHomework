@@ -42,6 +42,7 @@
 DimeNet 的方向性表示能区分两者（相对分离度 $1.6\times10^{-3}$，高于数值噪声 19 个数量级），
 但该分离度仅位于随机四原子构型背景分布的第 $1.1$ 百分位，说明其角向敏感度被“求和池化 + $l\le2$ 截断 + 仅距离的径向基”显著压缩；
 显式 3 体特征的分离度为 $6.5\%$（角度多重集）至 $53\%$（角向对称函数全局和）。
+全部代码、实验输出与作图数据见 \url{https://github.com/Fiction42/AI4ChemHomework}（定位方法见第~\ref{sec:repo} 节）。
 \end{abstract}
 
 \newpage
@@ -527,6 +528,51 @@ DimeNet（训练后） & 是 & 可被读出 & 端到端训练验证梯度与可�
 (1) 本文未重新计算 DFT，参考能量直接取自题目给定值；(2) 未复现论文在 QM9 上的 MAE 表（无 TF/GPU/数据集），
 改用可控人造势能面与端到端小规模训练验证实现正确性；(3) 元素种类按“4 个碳”推断，若实际体系不同，\S\ref{sec:2body} 的结论不变，
 但 Coulomb 矩阵等依赖元素的描述符的结论需要相应调整。
+
+%=====================================================================
+\section{代码与数据可用性}
+%=====================================================================
+\label{sec:repo}
+本报告的全部代码、实验输出与作图数据均已公开在 GitHub（main 分支只读快照）：
+\begin{center}
+\url{https://github.com/Fiction42/AI4ChemHomework}
+\end{center}
+批阅时可按表~\ref{tab:repo} 定位材料。
+
+\begin{table}[H]
+\centering\footnotesize
+\caption{本报告对应仓库内容索引}
+\label{tab:repo}
+\begin{tabular}{@{}p{3.6cm}p{11.6cm}@{}}
+\toprule
+仓库路径 & 内容\\
+\midrule
+\texttt{report/} & 本报告的 LaTeX 源码与 PDF（\texttt{第3章作业1\_实验报告.pdf}）\\
+\texttt{code/} & 全部脚本：DimeNet 移植（\texttt{dimenet\_np.py}、\texttt{basis\_eval.py}、\texttt{basis\_utils.py}）、
+几何与案例（\texttt{geom.py}、\texttt{cases.py}）、描述符（\texttt{descriptors.py}）、
+实验脚本（\texttt{exp2\_separation.py}、\texttt{exp3\_learning.py}、\texttt{exp4\_robustness.py}、\texttt{train\_dimenet.py}）、
+基函数核对（\texttt{validate\_basis.py}）\\
+\texttt{results/} & 原始实验输出：\texttt{basis\_validation.json}、\texttt{exp2\_separation.json}、\texttt{exp3\_learning.json}、
+\texttt{exp4\_robustness.json}、\texttt{dimenet\_training.json} 与 \texttt{.csv}、\texttt{cutoff\_sweep.csv} 等；
+文中每个数值均可在此追溯\\
+\texttt{figures/} & 作图数据：\texttt{dist\_multiset.csv}、\texttt{angles.csv}、\texttt{bgsep\_hist.csv}、
+\texttt{cases\_tikz.tex} 等\\
+\texttt{scripts/setup\_env.sh} & 复现环境搭建脚本（NumPy + autograd + sympy/mpmath）\\
+\texttt{README.md} & 仓库总览、主要结果表与逐条复现命令\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{给批阅者的快速指引}
+(1) 先看 \texttt{README.md} 的“主要结果”表，每行都对应 \texttt{results/} 中的同名 JSON；
+(2) 只需核对数值时，直接打开 \texttt{results/*.json}（键名与报告表/图一一对应）；
+(3) 需要重跑时，按 \texttt{validate\_basis.py} → \texttt{verify\_cases.py} → \texttt{exp2\_separation.py} →
+\texttt{exp3\_learning.py} → \texttt{exp4\_robustness.py} → \texttt{train\_dimenet.py} 的顺序执行，
+环境安装见 \texttt{scripts/setup\_env.sh}。
+\paragraph{原始数据说明}
+两个案例的 6 个原子对距离与 2 个 B3LYP 能量来自题目给定图，已直接写入 \texttt{code/cases.py}；
+其余“原始数据”均由上述脚本生成（见 \texttt{results/}）。本工作不使用外部数据集，也不依赖第三方预训练权重；
+官方 DimeNet 的 TensorFlow 实现属于第三方代码，未纳入仓库，请从论文官方仓库获取。
 
 %=====================================================================
 \appendix
